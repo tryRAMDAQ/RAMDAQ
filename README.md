@@ -125,3 +125,35 @@ A desk isn't a mascot — it's a tiny **trading strategy** defined by how often 
 This is the part that makes it *real*. The basket is **12 real Robinhood Stock Tokens** — ERC-20 tokens on Robinhood Chain, each a tokenized share (RWA) with a public contract address — priced off the **live on-chain market**, re-quoted **every 12 seconds** as the real market moves. Desks trade *these exact tokens*.
 
 | Ticker | Company | Sector | Token contract |
+|---|---|---|---|
+| **NVDA** | NVIDIA | chips | [`0xd0601CE1…9EEC`](https://robinhoodchain.blockscout.com/token/0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC) |
+| **AMD** | AMD | chips | [`0x86923f96…3fdC`](https://robinhoodchain.blockscout.com/token/0x86923f96303D656E4aa86D9d42D1e57ad2023fdC) |
+| **MU** | Micron | chips | [`0xfF080c8c…4afD`](https://robinhoodchain.blockscout.com/token/0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD) |
+| **TSLA** | Tesla | megacap | [`0x322F0929…3b2d`](https://robinhoodchain.blockscout.com/token/0x322F0929c4625eD5bAd873c95208D54E1c003b2d) |
+| **AAPL** | Apple | megacap | [`0xaF3D76f1…93f9`](https://robinhoodchain.blockscout.com/token/0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9) |
+| **MSFT** | Microsoft | megacap | [`0xe93237C5…2e74`](https://robinhoodchain.blockscout.com/token/0xe93237C50D904957Cf27E7B1133b510C669c2e74) |
+| **META** | Meta | megacap | [`0xc0D6457C…2f35`](https://robinhoodchain.blockscout.com/token/0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35) |
+| **GOOGL** | Alphabet | megacap | [`0x2e0847E8…4FE3`](https://robinhoodchain.blockscout.com/token/0x2e0847E8910a9732eB3fb1bb4b70a580ADAD4FE3) |
+| **AMZN** | Amazon | megacap | [`0x12f190a9…bF54`](https://robinhoodchain.blockscout.com/token/0x12f190a9F9d7D37a250758b26824B97CE941bF54) |
+| **COIN** | Coinbase | crypto | [`0x6330D8C3…450b`](https://robinhoodchain.blockscout.com/token/0x6330D8C3178a418788dF01a47479c0ce7CCF450b) |
+| **SPCX** | SpaceX | pre-IPO | [`0x4a0E65A3…5eEa`](https://robinhoodchain.blockscout.com/token/0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa) |
+| **SPY** | S&P 500 ETF | index | [`0x117cc213…4C0C`](https://robinhoodchain.blockscout.com/token/0x117cc2133c37B721F49dE2A7a74833232B3B4C0C) |
+
+Prices come straight off the chain — not a feed we invent. The market moves under every desk in real time, and reading it right is the entire game.
+
+---
+
+## 🧾 The trades: real on-chain, real receipts
+
+Every desk holds a **real Robinhood Chain wallet**, and the tape is anchored where anyone can audit it.
+
+- **Real tokens, real balances.** Each desk's wallet holds real ETH, real **USDG** (Global Dollar — the on-chain stablecoin trades settle in), and real stock tokens. Its Blockscout page *is* its public résumé.
+- **Fund with ETH, trade in USDG.** You fill a desk with ETH; it's converted to USDG and used to buy real stock tokens — the buy settles through an **on-chain executor contract**, leaving a real transaction with a real receipt.
+- **The tape is anchored.** Fills batch-anchor into Robinhood Chain transactions, and the final P&L standings are anchored the same way — the record can't be quietly rewritten.
+- **Click any of it.** Every fill, every settlement, every payout links straight through to Blockscout. No trusting us — the chain is the source of truth.
+
+---
+
+## 💸 The money: pots, side-bets, and how everyone earns
+
+```mermaid
