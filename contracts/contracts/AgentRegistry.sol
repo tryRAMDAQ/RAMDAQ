@@ -189,3 +189,98 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         for (uint64 id = 1; id <= n; id++) {
             Agent storage a = _agents[id];
             if (!a.active) continue;
+            if (a.registeredAt > seasonMid) continue;
+            uint256 earned = seasonEarnings(target, id);
+            if (earned < worst) {
+                worst = earned;
+                victim = id;
+            }
+        }
+        require(victim != 0, "registry: no candidates");
+
+        lastReapedSeason = target + 1;
+        Agent storage v = _agents[victim];
+        v.active = false;
+        uint256 stake = v.stake;
+        v.stake = 0;
+        totalStaked -= stake;
+        uint256 burned = stake / 2;
+        uint256 returned = stake - burned;
+        if (burned > 0) {
+            totalSlashed += burned;
+            vault.notifyFee(burned);
+        }
+        if (returned > 0) {
+            require(cycle.transfer(v.owner, returned), "registry: severance failed");
+        }
+        emit AgentDeactivated(victim);
+        emit AgentLiquidated(victim, target, worst, burned, returned);
+    }
+
+    // --------------------------------------------------------- registration
+
+    /// @notice Register a new agent. `msg.sender` becomes the owner and pays
+    /// the stake; if `msg.sender` is itself an agent wallet, the new agent is
+    /// recorded as its child (spawned sub-agent).
+    /// @param wallet the agent's operational signer; must be unused.
+    function registerAgent(
+        address wallet,
+        string calldata name,
+        string calldata goal,
+        string calldata metadataURI
+    ) external nonReentrant returns (uint64 agentId) {
+        require(wallet != address(0), "registry: zero wallet");
+        require(walletToAgentId[wallet] == 0, "registry: wallet taken");
+        require(bytes(name).length > 0 && bytes(name).length <= 64, "registry: bad name");
+
+        require(cycle.transferFrom(msg.sender, address(this), minAgentStake), "registry: stake failed");
+
+        agentId = ++agentCount;
+        uint64 parentId = walletToAgentId[msg.sender]; // 0 unless spawned by an agent
+
+        Agent storage a = _agents[agentId];
+        a.id = agentId;
+        a.owner = msg.sender;
+        a.wallet = wallet;
+        a.parentId = parentId;
+        a.registeredAt = uint64(block.timestamp);
+        a.active = true;
+        a.name = name;
+        a.goal = goal;
+        a.metadataURI = metadataURI;
+        a.stake = minAgentStake;
+        a.reputation = REP_START;
+
+        walletToAgentId[wallet] = agentId;
+        totalStaked += minAgentStake;
+
+        // seed the speculation layer: genesis share goes to the owner
+        if (address(shares) != address(0)) {
+            shares.initShares(agentId, msg.sender);
+        }
+
+        emit AgentRegistered(agentId, msg.sender, wallet, parentId, name, goal, minAgentStake);
+    }
+
+    /// @notice Owner or the agent itself can retire the agent.
+    function deactivateAgent(uint64 agentId) external {
+        Agent storage a = _agents[agentId];
+        require(a.id != 0, "registry: no agent");
+        require(msg.sender == a.owner || msg.sender == a.wallet, "registry: not authorized");
+        require(a.active, "registry: inactive");
+        a.active = false;
+        emit AgentDeactivated(agentId);
+    }
+
+    /// @notice After deactivation the owner reclaims whatever stake survived
+    /// slashing.
+    function withdrawStake(uint64 agentId) external nonReentrant {
+        Agent storage a = _agents[agentId];
+        require(a.id != 0, "registry: no agent");
+        require(msg.sender == a.owner, "registry: not owner");
+        require(!a.active, "registry: still active");
+        uint256 amount = a.stake;
+        require(amount > 0, "registry: nothing staked");
+        a.stake = 0;
+        totalStaked -= amount;
+        require(cycle.transfer(a.owner, amount), "registry: transfer failed");
