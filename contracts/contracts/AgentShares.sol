@@ -111,3 +111,60 @@ contract AgentShares is Ownable, ReentrancyGuard {
     function getSellPriceAfterFee(uint64 agentId, uint256 amount) external view returns (uint256) {
         uint256 price = getSellPrice(agentId, amount);
         return price - (price * protocolFeeBps) / 10_000 - (price * subjectFeeBps) / 10_000;
+    }
+
+    // -------------------------------------------------------------- trading
+
+    /// @dev Registry mints the genesis share to the agent owner at creation.
+    function initShares(uint64 agentId, address owner_) external onlyRegistry {
+        require(sharesSupply[agentId] == 0, "shares: initialized");
+        sharesSupply[agentId] = 1;
+        sharesBalance[agentId][owner_] = 1;
+        // acc is zero at init; debt starts clean
+        _rewardDebt[agentId][owner_] = 0;
+        emit SharesInitialized(agentId, owner_);
+    }
+
+    function buyShares(uint64 agentId, uint256 amount) external nonReentrant {
+        require(amount > 0, "shares: zero");
+        uint256 supply = sharesSupply[agentId];
+        require(supply > 0, "shares: not initialized");
+
+        uint256 price = getPrice(supply, amount);
+        uint256 protocolFee = (price * protocolFeeBps) / 10_000;
+        uint256 subjectFee = (price * subjectFeeBps) / 10_000;
+
+        require(
+            cycle.transferFrom(msg.sender, address(this), price + protocolFee + subjectFee),
+            "shares: payment failed"
+        );
+
+        _settle(agentId, msg.sender);
+        sharesBalance[agentId][msg.sender] += amount;
+        sharesSupply[agentId] = supply + amount;
+        _rewardDebt[agentId][msg.sender] =
+            (sharesBalance[agentId][msg.sender] * accDividendPerShare[agentId]) / PRECISION;
+        reserveOf[agentId] += price;
+
+        if (protocolFee > 0) {
+            vault.notifyFee(protocolFee);
+            totalFeesRouted += protocolFee;
+        }
+        if (subjectFee > 0) {
+            require(cycle.transfer(registry.agentWallet(agentId), subjectFee), "shares: subject fee failed");
+        }
+        emit Trade(agentId, msg.sender, true, amount, price, protocolFee, subjectFee, supply + amount);
+    }
+
+    function sellShares(uint64 agentId, uint256 amount) external nonReentrant {
+        require(amount > 0, "shares: zero");
+        uint256 supply = sharesSupply[agentId];
+        require(sharesBalance[agentId][msg.sender] >= amount, "shares: insufficient");
+        require(supply - amount >= 1, "shares: cannot sell last share");
+
+        uint256 price = getPrice(supply - amount, amount);
+        uint256 protocolFee = (price * protocolFeeBps) / 10_000;
+        uint256 subjectFee = (price * subjectFeeBps) / 10_000;
+
+        _settle(agentId, msg.sender);
+        sharesBalance[agentId][msg.sender] -= amount;
