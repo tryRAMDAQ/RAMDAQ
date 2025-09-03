@@ -104,3 +104,54 @@ contract StockTradeExecutor {
             tickSpacing: TICK_SPACING,
             hooks: address(0),
             hookData: bytes("")
+        });
+        uint256[] memory minHopPriceX36 = new uint256[](0);
+        ExactInputParams memory swap = ExactInputParams({
+            currencyIn: USDG,
+            path: path,
+            minHopPriceX36: minHopPriceX36,
+            amountIn: uint128(usdgIn),
+            amountOutMinimum: uint128(minNvdaOut)
+        });
+
+        // SWAP_EXACT_IN, SETTLE, TAKE. This matches successful calls against
+        // the currently deployed Robinhood Chain Universal Router.
+        bytes memory actions = hex"070b0e";
+        bytes[] memory actionParams = new bytes[](3);
+        actionParams[0] = abi.encode(swap);
+        actionParams[1] = abi.encode(USDG, usdgIn, true); // payer is this caller via Permit2
+        actionParams[2] = abi.encode(NVDA, address(this), 0); // take the full swap output
+
+        bytes[] memory inputs = new bytes[](1);
+        inputs[0] = abi.encode(actions, actionParams);
+        IUniversalRouterStockTrade(UNIVERSAL_ROUTER).execute(hex"10", inputs, deadline);
+
+        received = IERC20StockTrade(NVDA).balanceOf(address(this)) - beforeBalance;
+        if (received < minNvdaOut) revert InsufficientOutput(received, minNvdaOut);
+        _safeTransfer(NVDA, msg.sender, received);
+
+        entered = false;
+        emit StockPurchased(msg.sender, "NVDA", NVDA, usdgIn, received);
+    }
+
+    function _safeApprove(address token, address spender, uint256 amount) private {
+        (bool ok, bytes memory data) = token.call(
+            abi.encodeCall(IERC20StockTrade.approve, (spender, amount))
+        );
+        if (!ok || (data.length != 0 && !abi.decode(data, (bool)))) revert TokenCallFailed();
+    }
+
+    function _safeTransfer(address token, address to, uint256 amount) private {
+        (bool ok, bytes memory data) = token.call(
+            abi.encodeCall(IERC20StockTrade.transfer, (to, amount))
+        );
+        if (!ok || (data.length != 0 && !abi.decode(data, (bool)))) revert TokenCallFailed();
+    }
+
+    function _safeTransferFrom(address token, address from, address to, uint256 amount) private {
+        (bool ok, bytes memory data) = token.call(
+            abi.encodeCall(IERC20StockTrade.transferFrom, (from, to, amount))
+        );
+        if (!ok || (data.length != 0 && !abi.decode(data, (bool)))) revert TokenCallFailed();
+    }
+}
