@@ -69,3 +69,37 @@ async function main() {
     const data = calldata(wallet.address, ethIn, deficit);
     const gas = await provider.estimateGas({ from: wallet.address, to: ROUTER, data, value: ethIn });
     const fees = await provider.getFeeData();
+    const gasPrice = fees.maxFeePerGas ?? fees.gasPrice;
+    if (!gasPrice) throw new Error("RPC returned no gas price");
+    const projectedGas = ((gas * 12n) / 10n) * gasPrice;
+    if (projectedGas > MAX_GAS_ETH) throw new Error(`gas ceiling exceeded for ${wallet.address}: ${formatEther(projectedGas)} ETH`);
+    if (ethBalance - ethIn - projectedGas < MIN_ETH_RESERVE) throw new Error(`${wallet.address} would fall below the 0.005 ETH reserve`);
+    plans.push({ wallet, before, deficit, ethIn, quoted, data, gas });
+  }
+
+  console.log(JSON.stringify({ mode: live ? "LIVE" : "DRY_RUN", chainId: chainId.toString(), targetUsdg: "5", plans: plans.map((p) => ({
+    wallet: p.wallet.address,
+    currentUsdg: formatUnits(p.before, 6),
+    ethIn: formatEther(p.ethIn),
+    quotedUsdg: formatUnits(p.quoted, 6),
+    minimumUsdg: formatUnits(p.deficit, 6),
+    gasEstimate: p.gas.toString(),
+  })) }, null, 2));
+  if (!live) return;
+
+  const results: object[] = [];
+  for (const plan of plans) {
+    const tx = await plan.wallet.sendTransaction({ to: ROUTER, data: plan.data, value: plan.ethIn, gasLimit: (plan.gas * 12n) / 10n });
+    const receipt = await tx.wait(1);
+    if (!receipt || receipt.status !== 1) throw new Error(`swap reverted for ${plan.wallet.address}`);
+    const after = await token.balanceOf(plan.wallet.address);
+    if (after < TARGET) throw new Error(`${plan.wallet.address} still has less than 5 USDG`);
+    results.push({ wallet: plan.wallet.address, usdg: formatUnits(after, 6), tx: tx.hash });
+  }
+  console.log(JSON.stringify({ result: "ALL_WALLETS_FUNDED", wallets: results }, null, 2));
+}
+
+main().catch((error) => {
+  console.error("ERR:", error?.shortMessage ?? error?.message ?? error);
+  process.exit(1);
+});
