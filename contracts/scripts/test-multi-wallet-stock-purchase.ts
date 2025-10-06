@@ -34,3 +34,39 @@ async function main() {
   if ((await provider.getNetwork()).chainId !== 4663n) throw new Error("wrong chain");
   if ((await provider.getCode(EXECUTOR)) === "0x") throw new Error("executor is not deployed");
   const wallets = TESTS.map((_, i) => {
+    const key = process.env[`AGENT_SECRET_${i + 1}`];
+    if (!key) throw new Error(`AGENT_SECRET_${i + 1} is required`);
+    return new Wallet(key, provider);
+  });
+  const fees = await provider.getFeeData();
+  const gasPrice = fees.maxFeePerGas ?? fees.gasPrice;
+  if (!gasPrice) throw new Error("RPC returned no gas price");
+  const projectedPerWallet = 500_000n * gasPrice;
+  if (projectedPerWallet > MAX_GAS_PER_WALLET) {
+    throw new Error(`gas safety stop: ${formatEther(projectedPerWallet)} ETH per wallet > ${formatEther(MAX_GAS_PER_WALLET)} ETH`);
+  }
+
+  const funderUsdg = new Contract(USDG, ERC20_ABI, wallets[0]);
+  const balances: bigint[] = await Promise.all(wallets.map((w) => funderUsdg.balanceOf(w.address)));
+  const deficits = balances.map((b) => b >= AMOUNT ? 0n : AMOUNT - b);
+  const totalDeficit = deficits.reduce((a, b) => a + b, 0n);
+  if (balances[0] < AMOUNT + totalDeficit) throw new Error("wallet 1 lacks USDG for five capped tests");
+
+  console.log(JSON.stringify({
+    mode: live ? "LIVE" : "DRY_RUN",
+    executor: EXECUTOR,
+    perWalletUsdg: "0.25",
+    maxTotalUsdg: "1.25",
+    projectedMaxGasEthPerWallet: formatEther(projectedPerWallet),
+    tests: wallets.map((w, i) => ({ wallet: w.address, symbol: TESTS[i][0], fundingNeeded: formatUnits(deficits[i], 6) })),
+  }, null, 2));
+  if (!live) return;
+
+  const fundingTxs: string[] = [];
+  for (let i = 1; i < wallets.length; i++) {
+    if (deficits[i] === 0n) continue;
+    const tx = await funderUsdg.transfer(wallets[i].address, deficits[i]);
+    const receipt = await tx.wait(1);
+    if (!receipt || receipt.status !== 1) throw new Error(`funding wallet ${i + 1} reverted`);
+    fundingTxs.push(tx.hash);
+  }
