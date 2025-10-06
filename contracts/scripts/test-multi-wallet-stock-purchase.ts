@@ -70,3 +70,38 @@ async function main() {
     if (!receipt || receipt.status !== 1) throw new Error(`funding wallet ${i + 1} reverted`);
     fundingTxs.push(tx.hash);
   }
+
+  const results: object[] = [];
+  for (let i = 0; i < wallets.length; i++) {
+    const wallet = wallets[i];
+    const [symbol, token] = TESTS[i];
+    const usdg = new Contract(USDG, ERC20_ABI, wallet);
+    const stock = new Contract(token, STOCK_ABI, wallet);
+    const quoter = new Contract(QUOTER, QUOTER_ABI, wallet);
+    const executor = new Contract(EXECUTOR, EXECUTOR_ABI, wallet);
+    const usdgFirst = BigInt(USDG) < BigInt(token);
+    const [quoted] = await quoter.quoteExactInputSingle.staticCall({
+      poolKey: { currency0: usdgFirst ? USDG : token, currency1: usdgFirst ? token : USDG, fee: 3000, tickSpacing: 60, hooks: ZERO },
+      zeroForOne: usdgFirst,
+      exactAmount: AMOUNT,
+      hookData: "0x",
+    });
+    const minOut = (quoted * 99n) / 100n;
+    const before = await stock.balanceOf(wallet.address);
+    const approve = await usdg.approve(EXECUTOR, AMOUNT);
+    const approveReceipt = await approve.wait(1);
+    if (!approveReceipt || approveReceipt.status !== 1) throw new Error(`approval ${i + 1} reverted`);
+    const buy = await executor.buyStock(token, AMOUNT, minOut, Math.floor(Date.now() / 1000) + 180);
+    const buyReceipt = await buy.wait(1);
+    if (!buyReceipt || buyReceipt.status !== 1) throw new Error(`purchase ${i + 1} reverted`);
+    const received = (await stock.balanceOf(wallet.address)) - before;
+    if (received < minOut) throw new Error(`purchase ${i + 1} received less than minimum`);
+    results.push({ wallet: wallet.address, symbol, received: formatUnits(received, 18), approvalTx: approve.hash, purchaseTx: buy.hash });
+  }
+  console.log(JSON.stringify({ result: "ALL_FIVE_PURCHASES_CONFIRMED", fundingTxs, purchases: results }, null, 2));
+}
+
+main().catch((error) => {
+  console.error("ERR:", error?.shortMessage ?? error?.message ?? error);
+  process.exit(1);
+});
