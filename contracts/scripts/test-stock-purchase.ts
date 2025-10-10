@@ -90,3 +90,48 @@ async function main() {
   }, null, 2));
 
   if (!live) {
+    console.log("Dry run only. Pass --live to deploy, approve exactly 0.25 USDG, and purchase.");
+    return;
+  }
+
+  const factory = new ContractFactory(artifact.abi, artifact.bytecode, buyer);
+  const executor: any = await factory.deploy();
+  const deployReceipt = await executor.deploymentTransaction()!.wait();
+  const executorAddress = await executor.getAddress();
+
+  const approveTx = await usdg.approve(executorAddress, AMOUNT_IN);
+  const approveReceipt = await approveTx.wait();
+
+  const purchaseTx = await executor.buyStock(
+    AMOUNT_IN,
+    minOut,
+    Math.floor(Date.now() / 1000) + 300,
+  );
+  const purchaseReceipt = await purchaseTx.wait();
+  if (purchaseReceipt?.status !== 1) throw new Error("stock purchase reverted");
+
+  const nvdaAfter = await nvda.balanceOf(buyer.address);
+  const received = nvdaAfter - nvdaBefore;
+  if (received < minOut) throw new Error("confirmed purchase delivered less than minimum output");
+
+  console.log(JSON.stringify({
+    result: "STOCK_PURCHASE_CONFIRMED",
+    executor: executorAddress,
+    receivedNvda: formatUnits(received, 18),
+    transactions: {
+      deploy: deployReceipt?.hash,
+      approve: approveReceipt?.hash,
+      purchase: purchaseReceipt.hash,
+    },
+    gasUsed: {
+      deploy: deployReceipt?.gasUsed.toString(),
+      approve: approveReceipt?.gasUsed.toString(),
+      purchase: purchaseReceipt.gasUsed.toString(),
+    },
+  }, null, 2));
+}
+
+main().catch((error) => {
+  console.error("ERR:", error?.shortMessage ?? error?.message ?? error);
+  process.exit(1);
+});
