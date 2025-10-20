@@ -235,3 +235,80 @@ describe("ComputeMarket", () => {
     const provBefore = await f.cycle.balanceOf(f.providerAcct.address);
     const vaultBefore = await f.vault.totalFeesReceived();
     await f.compute.connect(f.agentWallet1).completeRental(1); // renter settles early
+    // fee 2.5% of 4 = 0.1; provider gets 3.9
+    expect(await f.cycle.balanceOf(f.providerAcct.address)).to.equal(provBefore + E(3.9));
+    expect((await f.vault.totalFeesReceived()) - vaultBefore).to.equal(E(0.1));
+    p = await f.compute.getProvider(1);
+    expect(p.availableUnits).to.equal(8);
+    expect(p.totalEarned).to.equal(E(3.9));
+    expect((await f.registry.getAgent(1)).lifetimeComputeSpend).to.equal(E(4));
+  });
+
+  it("lets anyone settle after the rental period and renters cancel unconfirmed rentals", async () => {
+    const f = await loadFixture(deployProtocol);
+    await setupProvider(f);
+    await registerAgent(f.registry, f.agentOwner, f.agentWallet1);
+
+    await f.compute.connect(f.agentWallet1).rent(1, 2, 600);
+    const agentBefore = await f.cycle.balanceOf(f.agentWallet1.address);
+    await f.compute.connect(f.agentWallet1).cancelRental(1); // provider never confirmed
+    expect(await f.cycle.balanceOf(f.agentWallet1.address)).to.equal(agentBefore + E(2) / 3n);
+
+    await f.compute.connect(f.agentWallet1).rent(1, 2, 600);
+    await f.compute.connect(f.providerAcct).confirmRental(2);
+    await expect(f.compute.connect(f.poster).completeRental(2)).to.be.revertedWith("compute: still running");
+    await time.increase(601);
+    await f.compute.connect(f.poster).completeRental(2); // anyone, once elapsed
+    expect((await f.compute.getRental(2)).status).to.equal(2n); // Completed
+  });
+
+  it("publishes the compute index from settled rentals", async () => {
+    const f = await loadFixture(deployProtocol);
+    await setupProvider(f);
+    await registerAgent(f.registry, f.agentOwner, f.agentWallet1);
+    expect(await f.compute.computeIndex()).to.equal(0n);
+
+    await f.compute.connect(f.agentWallet1).rent(1, 4, 1800);
+    await f.compute.connect(f.providerAcct).confirmRental(1);
+    await f.compute.connect(f.agentWallet1).completeRental(1);
+
+    // 4 CYCLE over 4u x 1800s = 7200 unit-seconds -> 2 CYCLE per unit-hour
+    expect(await f.compute.computeIndex()).to.equal(E(2));
+    expect(await f.compute.epochIndex(await f.registry.currentEpoch())).to.equal(E(2));
+  });
+
+  it("failure reports refund the agent, slash the provider and can deactivate it", async () => {
+    const f = await loadFixture(deployProtocol);
+    await setupProvider(f);
+    await registerAgent(f.registry, f.agentOwner, f.agentWallet1);
+
+    // big job: 8 units * 90000s at 2/hr = 400 CYCLE; slash = 200
+    await f.compute.connect(f.agentWallet1).rent(1, 8, 90000);
+    await f.compute.connect(f.providerAcct).confirmRental(1);
+
+    const agentBefore = await f.cycle.balanceOf(f.agentWallet1.address);
+    const vaultBefore = await f.vault.totalFeesReceived();
+    await f.compute.connect(f.agentWallet1).reportRentalFailure(1);
+
+    // refund 400 + slash compensation 100; vault gets 100
+    expect(await f.cycle.balanceOf(f.agentWallet1.address)).to.equal(agentBefore + E(400) + E(100));
+    expect((await f.vault.totalFeesReceived()) - vaultBefore).to.equal(E(100));
+    let p = await f.compute.getProvider(1);
+    expect(p.stake).to.equal(E(300));
+    expect(p.active).to.equal(true);
+    expect(p.failedRentals).to.equal(1);
+
+    // second failure drops stake to 100 < 250 -> deactivated
+    await f.compute.connect(f.agentWallet1).rent(1, 8, 90000);
+    await f.compute.connect(f.providerAcct).confirmRental(2);
+    await f.compute.connect(f.agentWallet1).reportRentalFailure(2);
+    p = await f.compute.getProvider(1);
+    expect(p.stake).to.equal(E(100));
+    expect(p.active).to.equal(false);
+
+    // provider can exit with what's left
+    const provBefore = await f.cycle.balanceOf(f.providerAcct.address);
+    await f.compute.connect(f.providerAcct).withdrawProviderStake(1);
+    expect(await f.cycle.balanceOf(f.providerAcct.address)).to.equal(provBefore + E(100));
+  });
+});
