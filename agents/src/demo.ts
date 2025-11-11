@@ -139,3 +139,72 @@ async function main() {
         console.log(paint.bold(`  [api] user agent "${p.name}" is LIVE (agent #${id}) - bidding in the arena`));
       } catch { /* next sweep */ }
     }
+  }, 3000);
+  stoppables.push({ stop: () => { clearInterval(userWatcher); api.close(); } });
+
+  // ------------------------------------------------------------ status loop
+  const status = contractsFor(provider, addresses);
+  const printStatus = async () => {
+    try {
+      const [agents, openIds, epoch, vaultFees, taskVolume, computeVolume, provs, block] = await Promise.all([
+        status.registry.getAgents(0, 50),
+        status.tasks.getOpenTaskIds(),
+        status.registry.currentEpoch(),
+        status.vault.totalFeesReceived(),
+        status.tasks.totalVolume(),
+        status.compute.totalComputeVolume(),
+        status.compute.getProviders(0, 10),
+        provider.getBlockNumber(),
+      ]);
+      const epochEnd = Number(await status.registry.epochEndTime(epoch));
+      const secsLeft = Math.max(0, epochEnd - Math.floor(Date.now() / 1000));
+
+      const lines: string[] = [];
+      lines.push("");
+      lines.push(paint.bold(`  ════ AGORA LEADERBOARD ════ epoch ${epoch} (${secsLeft}s left) | block ${block} | open tasks ${openIds.length}`));
+      lines.push(paint.gray("  AGENT              REP    EARNED      GPU SPEND   W/L      SHARES  PARENT"));
+      const ranked = [...agents].sort((a: any, b: any) => (b.lifetimeEarnings > a.lifetimeEarnings ? 1 : -1));
+      for (const a of ranked) {
+        const supply = await status.shares.sharesSupply(a.id);
+        const parent = a.parentId > 0n ? `<- #${a.parentId}` : "";
+        const flag = a.active ? " " : paint.red("X");
+        lines.push(
+          `  ${flag}${String(a.name).padEnd(17)} ${String(a.reputation).padStart(4)}   ${fmt(a.lifetimeEarnings).padStart(9)}   ${fmt(a.lifetimeComputeSpend).padStart(9)}   ${String(a.tasksCompleted).padStart(3)}/${String(a.tasksFailed).padEnd(3)}  ${String(supply).padStart(5)}   ${parent}`
+        );
+      }
+      const util = provs.map((p: any) =>
+        `${p.name} ${Number(p.totalUnits) - Number(p.availableUnits)}/${p.totalUnits}u`
+      ).join(" | ");
+      lines.push(paint.gray(`  compute: ${util}`));
+      lines.push(paint.gray(`  volume: tasks ${fmt(taskVolume)} CYCLE | compute ${fmt(computeVolume)} CYCLE | vault fees ${fmt(vaultFees, 2)} CYCLE`));
+      lines.push("");
+      console.log(lines.join("\n"));
+    } catch (err: any) {
+      console.error(paint.red(`status error: ${String(err?.message ?? err).slice(0, 100)}`));
+    }
+  };
+
+  const statusInterval = setInterval(printStatus, 20_000);
+  setTimeout(printStatus, 8_000);
+
+  const shutdown = async (code: number) => {
+    clearInterval(statusInterval);
+    for (const s of stoppables) s.stop();
+    console.log(paint.bold("\n  final state of the economy:"));
+    await printStatus();
+    process.exit(code);
+  };
+
+  process.on("SIGINT", () => void shutdown(0));
+  if (durationSecs > 0) {
+    setTimeout(() => void shutdown(0), durationSecs * 1000);
+    console.log(paint.gray(`  running for ${durationSecs}s...\n`));
+  } else {
+    console.log(paint.gray("  running until Ctrl+C\n"));
+  }
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
