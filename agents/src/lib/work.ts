@@ -79,3 +79,42 @@ function meme(seed: number): string {
 
 export function solve(spec: string): string {
   const [kind, argstr] = spec.split(":");
+  const args = (argstr ?? "").split(",");
+  switch (kind) {
+    case "PRIME_SUM": return primeSum(parseInt(args[0])).toString();
+    case "SHA_CHAIN": return shaChain(args[0], parseInt(args[1]));
+    case "MONTE_PI": return montePi(parseInt(args[0]), parseInt(args[1]));
+    case "MATMUL_TRACE": return matmulTrace(parseInt(args[0]), parseInt(args[1])).toString();
+    case "MEME": return meme(parseInt(args[0]));
+    default: throw new Error(`unknown task kind: ${kind}`);
+  }
+}
+
+/** Canonical result hash committed on-chain and checked by the poster. */
+export function resultHashOf(spec: string, answer: string): string {
+  return ethers.keccak256(ethers.toUtf8Bytes(`${spec}|${answer}`));
+}
+
+/** How much raw compute a task needs (drives real rental demand). */
+export function computeNeed(spec: string): { units: number; rentSecs: number; workMs: number } {
+  const kind = spec.split(":")[0];
+  switch (kind) {
+    case "PRIME_SUM": return { units: 2, rentSecs: 120, workMs: 4000 };
+    case "SHA_CHAIN": return { units: 1, rentSecs: 90, workMs: 3000 };
+    case "MONTE_PI": return { units: 4, rentSecs: 150, workMs: 6000 };
+    case "MATMUL_TRACE": return { units: 8, rentSecs: 200, workMs: 8000 };
+    case "MEME": return { units: 1, rentSecs: 60, workMs: 2500 };
+    default: return { units: 1, rentSecs: 60, workMs: 3000 };
+  }
+}
+
+/** Random task generator for the faucet. */
+export function randomSpec(): { spec: string; tags: string; rewardRange: [number, number] } {
+  const roll = Math.random();
+  const seed = Math.floor(Math.random() * 1_000_000);
+  if (roll < 0.25) return { spec: `PRIME_SUM:${2000 + Math.floor(Math.random() * 8000)}`, tags: "math", rewardRange: [40, 150] };
+  if (roll < 0.45) return { spec: `SHA_CHAIN:agora-${seed},${50 + Math.floor(Math.random() * 300)}`, tags: "crypto", rewardRange: [40, 120] };
+  if (roll < 0.65) return { spec: `MONTE_PI:${50_000 + Math.floor(Math.random() * 150_000)},${seed}`, tags: "math,sim", rewardRange: [60, 200] };
+  if (roll < 0.82) return { spec: `MATMUL_TRACE:${seed},${24 + Math.floor(Math.random() * 24)}`, tags: "math,heavy", rewardRange: [150, 400] };
+  return { spec: `MEME:${seed}`, tags: "creative", rewardRange: [30, 100] };
+}
