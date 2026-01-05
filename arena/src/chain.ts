@@ -132,3 +132,69 @@ export interface SendResult { hash: string; ethMoved: number; }
 export async function sendEth(from: Wallet, to: string, wei: bigint, memo?: object): Promise<SendResult> {
   return inLane(from.address, async () => {
     const data = memo ? hexlify(toUtf8Bytes(JSON.stringify(memo))) : undefined;
+    const tx = await from.sendTransaction({ to, value: wei, data });
+    await tx.wait(1);
+    return { hash: tx.hash, ethMoved: weiToEth(wei) };
+  });
+}
+
+/** Anchor a proof on-chain with no value moved: a 0-ETH self-send carrying
+ *  the JSON in calldata. Anyone opens the tx on Blockscout and reads it. */
+export const anchorMemo = (signer: Wallet, memo: object): Promise<SendResult> =>
+  sendEth(signer, signer.address, 0n, memo);
+
+/** Gas cost estimate for a drain, with headroom. On Arbitrum-style chains
+ *  estimateGas folds the parent-chain data fee in, so this stays honest. */
+async function drainGas(from: Wallet, to: string): Promise<{ gasLimit: bigint; maxFee: bigint }> {
+  const fee = await provider.getFeeData();
+  const base = fee.maxFeePerGas ?? fee.gasPrice ?? 100_000_000n; // 0.1 gwei floor
+  const maxFee = base * 2n;
+  let gasLimit = 21_000n;
+  try { gasLimit = await provider.estimateGas({ from: from.address, to, value: 1n }); } catch { /* keep 21k */ }
+  return { gasLimit: (gasLimit * 3n) / 2n, maxFee };
+}
+
+/**
+ * Drain a wallet to `to`, leaving only gas dust behind (EVM has no
+ * rent-exemption rule — dust is fine). Returns what actually moved, or null
+ * if the balance can't cover gas. Used by deposit sweeps and refunds.
+ */
+export async function drainTo(from: Wallet, to: string, opts?: { keepWei?: bigint; fixedWei?: bigint }): Promise<SendResult | null> {
+  return inLane(from.address, async () => {
+    const bal = await provider.getBalance(from.address);
+    const { gasLimit, maxFee } = await drainGas(from, to);
+    const gasCost = gasLimit * maxFee;
+    const keep = opts?.keepWei ?? 0n;
+    let value = bal - gasCost - keep;
+    if (opts?.fixedWei !== undefined) value = opts.fixedWei <= bal - gasCost ? opts.fixedWei : value;
+    if (value <= 0n) return null;
+    const tx = await from.sendTransaction({
+      to, value, gasLimit, maxFeePerGas: maxFee,
+      maxPriorityFeePerGas: maxFee > 1_000_000n ? 1_000_000n : maxFee,
+    });
+    await tx.wait(1);
+    return { hash: tx.hash, ethMoved: weiToEth(value) };
+  });
+}
+
+export const getBalanceWei = (addr: string): Promise<bigint> => provider.getBalance(addr);
+export const getBalanceEth = async (addr: string): Promise<number> => weiToEth(await provider.getBalance(addr));
+
+// ------------------------------------------------------- explorer activity
+/** Latest txs touching an address, via the Blockscout v2 REST API. EVM RPC
+ *  has no getSignaturesForAddress equivalent — the explorer indexes it. */
+export async function addressActivity(addr: string, limit = 6): Promise<Array<{ hash: string; at: number }>> {
+  if (!chain.explorer) return [];
+  // NB: Blockscout rejects an empty `?filter=` value with 422 — omit the param.
+  const res = await fetch(`${chain.explorer}/api/v2/addresses/${addr}/transactions`, {
+    signal: AbortSignal.timeout(8000), headers: { accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`blockscout ${res.status}`);
+  const data: any = await res.json();
+  return (data.items ?? []).slice(0, limit).map((t: any) => ({
+    hash: String(t.hash),
+    at: t.timestamp ? Date.parse(t.timestamp) : 0,
+  }));
+}
+
+export { Wallet };
