@@ -261,3 +261,265 @@ async function agentJobTx(w: Wallet, agent: RaceAgent, job: { receiptTx?: string
 // budget[agentId] = share of the wallet balance snapshotted at race start (ETH).
 const raceSpend = new Map<string, { budget: number; spent: number }>();
 async function initRaceSpendCaps(): Promise<void> {
+  raceSpend.clear();
+  if (!race) return;
+  for (const a of race.agents) {
+    if (!a.house) continue;
+    const w = houseWalletByName.get(a.name);
+    if (!w) continue;
+    try {
+      const bal = await getBalanceEth(w.address);
+      raceSpend.set(a.id, { budget: (bal * AGENT_SPEND_CAP_BPS) / 10_000, spent: 0 });
+    } catch { raceSpend.set(a.id, { budget: 0, spent: 0 }); }
+  }
+}
+
+// Keep the wallet board fresh: real balances + real on-chain activity for every
+// house wallet and the treasury — served in /state for the site.
+async function refreshWalletBoard(): Promise<void> {
+  const all = [...agentWallets.map((k) => k.address), treasury.address, ...(TREASURY_ADDRESS ? [TREASURY_ADDRESS] : [])];
+  for (const addr of all) {
+    try { walletEth.set(addr, await getBalanceEth(addr)); } catch { /* keep last */ }
+    try {
+      chainTxs.set(addr, await addressActivity(addr, 6));
+    } catch { /* explorer index unreachable — our own tx ring still shows */ }
+  }
+}
+/** Merged view: explorer-indexed activity + our just-sent txs the index hasn't caught yet. */
+function walletActivity(addr: string): Array<{ hash: string; at: number }> {
+  const seen = new Set<string>();
+  const out: Array<{ hash: string; at: number }> = [];
+  for (const e of [...(walletTxs.get(addr) ?? []), ...(chainTxs.get(addr) ?? [])]) {
+    if (seen.has(e.hash)) continue;
+    seen.add(e.hash);
+    out.push(e);
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------ state
+interface SideBet { owner: string; agentId: string; eth: number; depositAddress: string; }
+
+interface Trade extends Fill {
+  agentId: string;
+  name: string;
+  strategy: StrategyId;
+}
+
+interface Race {
+  id: number;
+  openedAt: number;  // lobby opens (entries open)
+  startsAt: number;  // race begins (entries LOCK)
+  endsAt: number;    // race ends
+  potEth: number;        // entry stakes (players)
+  sidePotEth: number;    // spectator side bets
+  agents: RaceAgent[];
+  jobs: ComputeJob[];    // legacy, always [] in trading mode
+  trades: Trade[];       // the tape — every fill, newest last
+  sideBets: SideBet[];
+  settled: boolean;
+  results: Array<{ name: string; owner: string | null; credits: number; paidEth: number; tx?: string }>;
+  sideNote?: string;
+  anchorTx?: string;        // on-chain calldata anchor of the final standings
+}
+
+// walletStats = cumulative REAL ETH each house agent has earned (paid to it for
+// verified wins) and spent (rent/losses), keyed by agent name.
+// Persisted so the on-chain P&L survives redeploys.
+interface Persisted { raceCounter: number; pastRaces: Race[]; walletStats?: Record<string, { earned: number; spent: number }>; }
+const DB_PATH = path.join(STATE_DIR, "races-evm.json");
+const db: Persisted = fs.existsSync(DB_PATH)
+  ? JSON.parse(fs.readFileSync(DB_PATH, "utf8"))
+  : { raceCounter: 0, pastRaces: [] };
+db.walletStats = db.walletStats ?? {};
+const saveDb = () => fs.writeFileSync(DB_PATH, JSON.stringify(db));
+function recordFlow(name: string, eth: number, earned: boolean): void {
+  const w = (db.walletStats![name] = db.walletStats![name] ?? { earned: 0, spent: 0 });
+  if (earned) w.earned += eth; else w.spent += eth;
+}
+
+let race: Race | null = null;
+let lastTradeAt = 0;
+const pendingAnchor: Trade[] = []; // fills awaiting their on-chain batch anchor
+let realStockBuysThisRace = 0;
+const realStockBuysByWallet = new Map<string, number>();
+let realStockSellsThisRace = 0;
+const realStockSellsByWallet = new Map<string, number>();
+const realStockLots = new Map<string, { sym: LiquidStockSymbol; amount: string }>();
+const recentBuySymbols = new Map<string, string[]>();
+const stockBuyPaused = new Map<string, number>();
+
+// 5 house desks ↔ 5 wallets (AGENT_SECRET_1..5, by position).
+// The cast is Robin Hood lore — fitting, since they trade on Robinhood Chain.
+const HOUSE: Array<{ name: string; strategy: StrategyId }> = [
+  { name: "Friar Tuck", strategy: "balanced" },   // steady hands, blue chips
+  { name: "Will Scarlet", strategy: "undercut" }, // the quick blade — scalps
+  { name: "Little John", strategy: "premium" },   // the big man — whale positions
+  { name: "Sheriff Notts", strategy: "memes" },   // the villain — degen chaos
+  { name: "Robyn Arrow", strategy: "sniper" },    // never misses the mover
+];
+const houseWalletByName = new Map<string, Wallet>(HOUSE.map((h, i) => [h.name, agentWallets[i]]));
+
+interface RealPortfolio {
+  usdg: number;
+  stockUsd: number;
+  equityUsd: number;
+  startEquityUsd: number;
+  pnlUsd: number;
+  positions: Array<{ sym: string; qty: number; px: number; valueUsd: number; token: string }>;
+  history: Array<{ t: number; v: number }>;
+  updatedAt: number;
+}
+
+const USDG_TOKEN = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
+const BALANCE_ABI = ["function balanceOf(address) view returns(uint256)"];
+const realPortfolios = new Map<string, RealPortfolio>();
+const realPortfolioBaselines = new Map<string, number>();
+const realPortfolioHistory = new Map<string, Array<{ t: number; v: number }>>();
+
+async function refreshRealPortfolios(resetBaseline = false): Promise<void> {
+  if (chain.chainId !== 4663) return;
+  await Promise.all(agentWallets.map(async (wallet) => {
+    try {
+      const stockEntries = LIQUID_SYMBOLS.map((sym) => [sym, LIQUID_STOCKS[sym]] as const);
+      const [usdgRaw, ...stockRaws] = await Promise.all([
+        new Contract(USDG_TOKEN, BALANCE_ABI, provider).balanceOf(wallet.address),
+        ...stockEntries.map(([, token]) => new Contract(token, BALANCE_ABI, provider).balanceOf(wallet.address)),
+      ]);
+      const usdg = Number(formatUnits(usdgRaw, 6));
+      const positions: RealPortfolio["positions"] = [];
+      stockEntries.forEach(([sym, token], i) => {
+        const qty = Number(formatUnits(stockRaws[i], 18));
+        const px = pxOf(sym) ?? 0;
+        if (qty > 1e-12) positions.push({ sym, qty, px, valueUsd: qty * px, token });
+      });
+      const stockUsd = positions.reduce((sum, p) => sum + p.valueUsd, 0);
+      const equityUsd = usdg + stockUsd;
+      if (resetBaseline || !realPortfolioBaselines.has(wallet.address)) realPortfolioBaselines.set(wallet.address, equityUsd);
+      const startEquityUsd = realPortfolioBaselines.get(wallet.address)!;
+      const pnlUsd = equityUsd - startEquityUsd;
+      const history = resetBaseline ? [] : (realPortfolioHistory.get(wallet.address) ?? []);
+      history.push({ t: Date.now(), v: pnlUsd });
+      if (history.length > 240) history.shift();
+      realPortfolioHistory.set(wallet.address, history);
+      realPortfolios.set(wallet.address, {
+        usdg, stockUsd, equityUsd, startEquityUsd, pnlUsd,
+        positions: positions.sort((a, b) => b.valueUsd - a.valueUsd),
+        history: [...history], updatedAt: Date.now(),
+      });
+    } catch { /* keep the last confirmed portfolio snapshot */ }
+  }));
+}
+
+function realPortfolioOf(a: RaceAgent): RealPortfolio | undefined {
+  const wallet = a.house ? houseWalletByName.get(a.name) : undefined;
+  return wallet ? realPortfolios.get(wallet.address) : undefined;
+}
+
+const scoreOf = (a: RaceAgent): number => realPortfolioOf(a)?.pnlUsd ?? a.credits;
+const equityOf = (a: RaceAgent): number => realPortfolioOf(a)?.equityUsd ?? a.equity;
+
+function newRace(): Race {
+  db.raceCounter += 1;
+  const agents = HOUSE.map((h, i) =>
+    newAgent({
+      id: `r${db.raceCounter}-house${i}`, name: h.name, strategy: h.strategy,
+      house: true, owner: null, depositAddress: null, funded: true,
+      entryEth: 0, backend: "vast", // legacy field, unused in trading mode
+    })
+  );
+  pendingAnchor.length = 0;
+  realStockBuysThisRace = 0;
+  realStockBuysByWallet.clear();
+  realStockSellsThisRace = 0;
+  realStockSellsByWallet.clear();
+  realStockLots.clear();
+  realPortfolioBaselines.clear();
+  realPortfolioHistory.clear();
+  recentBuySymbols.clear();
+  const openedAt = Date.now();
+  const startsAt = openedAt + LOBBY_MS;   // lobby first, then the race begins
+  const r: Race = {
+    id: db.raceCounter,
+    openedAt, startsAt, endsAt: startsAt + RACE_MS,
+    potEth: 0, sidePotEth: 0,
+    agents, jobs: [], trades: [], sideBets: [],
+    settled: false, results: [],
+  };
+  log(`race #${r.id} LOBBY open - stake for ${LOBBY_MS / 1000}s, then the agents trade RWA stocks for ${RACE_MS / 60000} min`);
+  const qs = allQuotes();
+  if (qs.length) log(`  market: ${qs.slice(0, 6).map((q) => `${q.sym} $${q.usd.toFixed(2)}`).join(" · ")} …`);
+  return r;
+}
+
+// ------------------------------------------------------------ trading floor
+function agentById(id: string): RaceAgent | undefined {
+  return race?.agents.find((a) => a.id === id);
+}
+
+const SYMS: string[] = [...LIQUID_SYMBOLS];
+const pxOf = (sym: string) => quoteOf(sym)?.usd;
+const momOf = (sym: string) => momentum(sym, 3 * 60_000);
+function publicOnchainTrade(f: Fill & Partial<Pick<Trade, "agentId" | "name" | "strategy">>) {
+  if (!f.stockTx || !f.stockAmount || !f.usdgAmount) return null;
+  const qty = Number(f.stockAmount);
+  const usd = Number(f.usdgAmount);
+  const side = f.stockAction ?? f.side;
+  return {
+    t: f.t, agentId: f.agentId, name: f.name, strategy: f.strategy,
+    sym: f.sym, side, qty, px: qty > 0 ? usd / qty : f.px, usd,
+    receiptTx: SHOW_AGENTS ? f.stockTx : null,
+    proven: true,
+    onchainPurchase: side === "buy",
+    onchainSale: side === "sell",
+    stockAmount: f.stockAmount,
+    usdgAmount: f.usdgAmount,
+    stockToken: f.stockToken ?? null,
+  };
+}
+const fmtUsd = (v: number) => (v >= 0 ? "+" : "−") + "$" + Math.abs(v).toFixed(2);
+
+/** One pass of the floor: every funded agent may act on its persona's signal.
+ *  Fills execute at the LIVE market price ± a small realistic slippage. */
+function diversifyBuy(a: RaceAgent, intent: { sym: string; side: "buy" | "sell"; qty: number }): typeof intent {
+  if (intent.side !== "buy") return intent;
+  const prefs = STRATEGIES[a.strategy].prefs.filter((s) => SYMS.includes(s));
+  const universe = prefs.length >= 2 ? prefs : SYMS;
+  const recent = recentBuySymbols.get(a.id) ?? [];
+  const choices = universe.filter((s) => !recent.includes(s));
+  const sym = choices.length ? choices[Math.floor(rng() * choices.length)] : intent.sym;
+  const oldPx = pxOf(intent.sym);
+  const newPx = pxOf(sym);
+  if (!oldPx || !newPx) return intent;
+  const notional = intent.qty * oldPx;
+  return { ...intent, sym, qty: Math.round((notional / newPx) * 10_000) / 10_000 };
+}
+
+async function mirrorRealStockBuy(a: RaceAgent, fill: Trade): Promise<boolean> {
+  if (!REAL_STOCK_TRADES || fill.side !== "buy" || !a.house) return false;
+  if (realStockBuysThisRace >= REAL_STOCK_MAX_BUYS_PER_RACE) return false;
+  const wallet = houseWalletByName.get(a.name);
+  if (!wallet || (stockBuyPaused.get(wallet.address) ?? 0) > Date.now()) return false;
+  if ((realStockBuysByWallet.get(wallet.address) ?? 0) >= REAL_STOCK_MAX_BUYS_PER_WALLET) return false;
+  if (!LIQUID_SYMBOLS.includes(fill.sym as LiquidStockSymbol)) return false;
+
+  // Reserve before awaiting so overlapping rounds cannot breach the race cap.
+  realStockBuysThisRace += 1;
+  realStockBuysByWallet.set(wallet.address, (realStockBuysByWallet.get(wallet.address) ?? 0) + 1);
+  try {
+    const purchase = await buyStockToken(wallet, fill.sym as LiquidStockSymbol, {
+      executor: STOCK_EXECUTOR_ADDRESS,
+      amountUsdg: REAL_STOCK_BUY_USDG,
+      slippageBps: REAL_STOCK_SLIPPAGE_BPS,
+      maxGasEth: REAL_STOCK_MAX_GAS_ETH,
+    });
+    fill.stockTx = purchase.purchaseTx;
+    fill.approvalTx = purchase.approvalTx;
+    fill.stockToken = purchase.token;
+    fill.stockAmount = purchase.stockReceived;
+    fill.stockAction = "buy";
+    fill.usdgAmount = purchase.usdgSpent;
+    realStockLots.set(wallet.address, { sym: purchase.symbol, amount: purchase.stockReceived });
+    if (purchase.approvalTx) pushWalletTx(wallet.address, purchase.approvalTx);
+    pushWalletTx(wallet.address, purchase.purchaseTx);
