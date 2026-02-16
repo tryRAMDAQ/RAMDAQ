@@ -167,3 +167,172 @@ export function HouseWallets() {
         <span className="dot" style={{ background: tint, margin: 0 }} />
         <span className="ink" style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{name}</span>
         {strategy && <span className="mut" style={{ fontSize: 10 }}>{arena.strategies?.[strategy]?.name ?? strategy}</span>}
+        {paused && <span title="wallet needs ETH for gas" style={{ color: "var(--critical)", fontSize: 10 }}>⚠ fund</span>}
+      </span>
+      {address ? (
+        <a href={explorerAddressUrl(arena, address)} target="_blank" rel="noreferrer" title="open this wallet's full activity on Blockscout"
+          style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--violet)", textDecoration: "none", whiteSpace: "nowrap" }}>
+          {address.slice(0, 6)}..{address.slice(-4)} ↗
+        </a>
+      ) : (
+        <span className="mut" style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, whiteSpace: "nowrap" }} title="announced at token launch">TBA</span>
+      )}
+      <span style={{ textAlign: "right", whiteSpace: "nowrap", lineHeight: 1.25 }}>
+        <span className="num mono ink" style={{ fontSize: 12.5 }}>{tradingEquityUsd !== null && tradingEquityUsd !== undefined ? `$${Number(tradingEquityUsd).toFixed(2)}` : "…"}</span>
+        {tradingPnlUsd !== null && tradingPnlUsd !== undefined && <span style={{ display: "block", color: tradingPnlUsd >= 0 ? "var(--good)" : "var(--critical)", fontFamily: "var(--font-mono)", fontSize: 9.5 }}>{tradingPnlUsd >= 0 ? "+$" : "−$"}{Math.abs(Number(tradingPnlUsd)).toFixed(4)} P&amp;L</span>}
+        <span className="mut" style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: 9 }}>{usdg !== null && usdg !== undefined ? `${Number(usdg).toFixed(2)} USDG` : ""}{eth !== null && eth !== undefined ? ` · ${Number(eth).toFixed(5)} ETH gas` : ""}</span>
+        {(ethEarned > 0 || ethSpent > 0) && (
+          <span style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: 9.5, marginTop: 2 }} title="cumulative real ETH earned (wins) and spent (rent/losses) on-chain">
+            <span style={{ color: "var(--good)" }}>▲{Number(ethEarned).toFixed(6)}</span>{" "}<span style={{ color: "var(--critical)" }}>▼{Number(ethSpent).toFixed(6)}</span>
+          </span>
+        )}
+      </span>
+      <span style={{ display: "flex", gap: 6, flexWrap: "wrap", minWidth: 0 }}>
+        {(txs ?? []).slice(0, 3).map((t: any) => (
+          <a key={t.hash} href={explorerTxUrl(arena, t.hash)} target="_blank" rel="noreferrer"
+            style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--violet)", background: "var(--violet-soft)", borderRadius: 6, padding: "2px 7px", textDecoration: "none", whiteSpace: "nowrap" }}>
+            {t.hash.slice(0, 6)}…{t.hash.slice(-4)}{t.at ? ` · ${timeAgo(t.at)}` : ""} ↗
+          </a>
+        ))}
+        {(txs ?? []).length === 0 && <span className="mut" style={{ fontSize: 10.5 }}>{address ? "first tx incoming…" : "announced at token launch"}</span>}
+      </span>
+      {address ? (
+        <a href={explorerAddressUrl(arena, address)} target="_blank" rel="noreferrer" className="mut"
+          style={{ fontSize: 10.5, textDecoration: "none", whiteSpace: "nowrap" }}>all activity →</a>
+      ) : <span className="mut" style={{ fontSize: 10.5, whiteSpace: "nowrap" }}>TBA</span>}
+    </div>
+  );
+
+  return (
+    <div className="card" style={{ borderColor: "rgba(217,119,6,0.35)", background: "linear-gradient(180deg, rgba(217,119,6,0.05), var(--surface))" }}>
+      <h3><EthMark size={14} style={{ marginRight: 7 }} />House wallets — real agents, real transactions <span className="hbar" /><span className="livedot" /></h3>
+      <div className="mut" style={{ fontSize: 11.5, marginBottom: 6 }}>
+        Each house agent runs its own Robinhood Chain wallet. Displayed equity is its <b className="ink">actual USDG plus stock-token value</b>,
+        and P&amp;L is the marked-to-market change since the race opened. Every trade hash opens directly on Blockscout.
+        {w.maskNote && <> <b className="ink">🔒 {w.maskNote}</b> — the on-chain flows run the whole time.</>}
+      </div>
+      {w.agents.map((a: any) => (
+        <Row key={a.name} {...a} tint={STRAT_COLOR[a.strategy] ?? "#2a78d6"} />
+      ))}
+      <Row {...w.treasury} tint="#16151d" name={w.treasury.address ? (w.treasury.receiveOnly ? "Treasury — receive-only: rent, rake & sweeps flow IN" : "House treasury — the pot, payouts, rewards & rake") : "Treasury — address TBA at token launch"} last />
+    </div>
+  );
+}
+
+// ---- the VISUAL race: countdown ring + animated bars (the "it's a race" bit)
+export function VisualRace({ arena, myAddress }: { arena: any; myAddress?: string }) {
+  const race = arena.race;
+  if (!race) return null;
+  const ranked = [...race.agents].filter((a: any) => a.funded).sort((a: any, b: any) => b.credits - a.credits);
+  const max = Math.max(...ranked.map((a: any) => a.credits), 1);
+  const now = Date.now();
+  const inLobby = now < race.startsAt;
+  const target = inLobby ? race.startsAt : race.endsAt;
+  const total = inLobby ? (race.startsAt - race.openedAt) / 1000 : (race.endsAt - race.startsAt) / 1000;
+  const secsLeft = Math.max(0, Math.floor((target - now) / 1000));
+  const frac = Math.min(1, Math.max(0, secsLeft / total));
+  const ringColor = inLobby ? "#d97706" : "var(--violet)";
+  const R = 52, C = 2 * Math.PI * R;
+  const mm = Math.floor(secsLeft / 60), ss = secsLeft % 60;
+
+  return (
+    <div className="card" style={{ background: inLobby ? "linear-gradient(180deg, rgba(217,119,6,0.06), var(--surface))" : "linear-gradient(180deg, var(--violet-glow), var(--surface))" }}>
+      {inLobby && (
+        <div style={{ textAlign: "center", marginBottom: 12, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--amber, #d97706)" }}>
+          🟡 LOBBY OPEN — stake now to enter race #{race.id}. Entries lock in {mm}:{String(ss).padStart(2, "0")}, then the race runs.
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "150px 1fr 200px", gap: 20, alignItems: "center" }}>
+        {/* countdown ring */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+          <svg width="130" height="130" viewBox="0 0 130 130">
+            <circle cx="65" cy="65" r={R} fill="none" stroke="rgba(22,21,29,0.08)" strokeWidth="6" />
+            <circle cx="65" cy="65" r={R} fill="none" stroke={ringColor} strokeWidth="6" strokeLinecap="round"
+              strokeDasharray={C} strokeDashoffset={C * (1 - frac)} transform="rotate(-90 65 65)"
+              style={{ transition: "stroke-dashoffset 950ms linear" }} />
+            <text x="65" y="60" textAnchor="middle" fill="var(--ink)" fontSize="21" fontWeight="600" fontFamily="IBM Plex Mono, monospace">{mm}:{String(ss).padStart(2, "0")}</text>
+            <text x="65" y="79" textAnchor="middle" fill="var(--muted)" fontSize="9" letterSpacing="1.5" fontFamily="Space Grotesk, sans-serif">{inLobby ? "TILL START" : `RACE #${race.id}`}</text>
+          </svg>
+          <span style={{ fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--muted)" }}>{inLobby ? "entries open" : "racing now"}</span>
+        </div>
+
+        {/* the animated race bars */}
+        <div>
+          {ranked.map((a: any, i: number) => {
+            const w = Math.max(a.credits > 0 ? 3 : 0, (a.credits / max) * 100);
+            const color = STRAT_COLOR[a.strategy] ?? "#2a78d6";
+            const mine = myAddress && a.owner === myAddress;
+            return (
+              <div key={a.id} style={{ display: "grid", gridTemplateColumns: "26px 20px 120px 1fr 66px", gap: 8, alignItems: "center", height: 30 }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: i === 0 ? "var(--warning)" : "var(--muted)", fontWeight: i === 0 ? 700 : 400 }}>{i === 0 && a.credits > 0 ? "▲P1" : `P${i + 1}`}</span>
+                <span className="dot" style={{ background: color, margin: 0 }} />
+                <span style={{ fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.name}{mine && <span style={{ color: "var(--violet)", fontSize: 9 }}> ·YOU</span>}</span>
+                <div style={{ position: "relative", height: 14, borderLeft: "1px solid var(--border-strong)" }}>
+                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${w}%`, background: color, borderRadius: "0 4px 4px 0", boxShadow: `0 1px 6px ${color}44`, transition: "width 700ms cubic-bezier(0.22,1,0.36,1)" }} />
+                </div>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: a.credits >= 0 ? "var(--good)" : "var(--critical)", textAlign: "right" }}>{fmtPnl(a.credits)}</span>
+              </div>
+            );
+          })}
+          {ranked.length === 0 && <div className="mut" style={{ padding: "14px 0" }}>agents funding up…</div>}
+        </div>
+
+        {/* the stakes */}
+        <div style={{ textAlign: "right" }}>
+          <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.1em" }}>racing for</div>
+          <div style={{ fontFamily: "var(--font-mono)", fontSize: 22, fontWeight: 600, color: "var(--accent)" }}>{fmtEth(race.potEth)} <EthMark size={17} /></div>
+          <div className="mut" style={{ fontSize: 11 }}>+ {fmtEth(race.sidePotEth)} <EthMark size={9} /> side pool</div>
+          <div className="mut" style={{ fontSize: 11, marginTop: 4 }}>winner takes the pot</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ctl: React.CSSProperties = { background: "var(--page)", border: "1px solid var(--border)", color: "var(--ink)", borderRadius: 8, padding: "6px 9px", fontFamily: "var(--font-mono)", fontSize: 12 };
+
+// ============================================================ BuildAgentForm
+// THE single create-agent flow. Identical wherever it's used.
+export function BuildAgentForm() {
+  const { arena } = useArena();
+  const { wallet, connect } = useWallet();
+  const [name, setName] = useState("");
+  const [strategy, setStrategy] = useState("balanced");
+  const [entryEth, setEntryEth] = useState(0.002);
+  const [msg, setMsg] = useState<{ err: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const joinOpen = arena?.race ? Date.now() < arena.race.joinCutoff : false;
+  const lobbyLeft = arena?.race ? Math.max(0, Math.floor((arena.race.startsAt - Date.now()) / 1000)) : 0;
+  const nextLobby = arena?.race ? Math.max(0, Math.floor((arena.race.endsAt - Date.now()) / 1000)) : 0;
+  const stakes = [0.002, 0.005, 0.01, 0.05, 0.1, 0.25];
+
+  async function doConnect() {
+    try { await connect(); setMsg(null); } catch (e: any) { setMsg({ err: true, text: String(e?.message ?? e).slice(0, 120) }); }
+  }
+  async function join() {
+    if (!wallet || !arena) return;
+    setBusy(true);
+    setMsg({ err: false, text: "creating your agent…" });
+    try {
+      const res = await fetch(`${RACES_API}/join`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: name || `${wallet.name}-agent`, strategy, owner: wallet.address, entryEth }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setMsg({ err: false, text: `approve the ${entryEth} ETH stake in ${wallet.name}…` });
+      const tx = await payEntry(arena.chain, wallet.provider, wallet.address, data.depositAddress, data.entryWeiHex);
+      setMsg({ err: false, text: `YOU'RE IN (${tx.slice(0, 12)}…). Your agent joins the race when the lobby closes.` });
+    } catch (e: any) { setMsg({ err: true, text: String(e?.message ?? e).slice(0, 160) }); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card" style={{ borderColor: "var(--violet-border)", background: "linear-gradient(180deg, var(--violet-soft), var(--surface))" }}>
+      <h3>Create your agent — it trades real tokenized stocks <span className="hbar" /></h3>
+      {!wallet ? (
+        <div className="row">
+          <button className="primary" onClick={doConnect}>Connect Wallet</button>
+          <span className="mut">stake real ETH on Robinhood Chain{arena?.network === "testnet" ? " (testnet)" : ""} · agents race real wallet equity · best P&amp;L takes the pot</span>
+          {msg && <span className={msg.err ? "err" : "ok"}>{msg.text}</span>}
