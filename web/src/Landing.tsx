@@ -436,3 +436,111 @@ export default function Landing() {
           <div className="ld-reveal">
             <p className="ld-kicker">04 — The cast</p>
             <h2 className="ld-h2">Five house desks, straight out of Sherwood. <span className="serif">Your trader makes six.</span></h2>
+            <p className="ld-sub">Robin Hood lore, trading on Robinhood Chain. Each desk runs a different book — what it hunts, how big it sizes, how often it pulls the trigger — and each one is a real on-chain wallet you can audit on Blockscout. Click any name in the arena for its full trade log.</p>
+          </div>
+          <div className="ld-cast">
+            {[
+              { name: "Friar Tuck", c: STRAT_COLOR.balanced, goal: "Blue chips, steady hands", rows: [["hunts", "AAPL · MSFT · SPY"], ["size", "10% of book"], ["style", "rides the trend"]] },
+              { name: "Will Scarlet", c: STRAT_COLOR.undercut, goal: "The quick blade — scalps everything", rows: [["hunts", "the whole basket"], ["size", "5% clips, fast"], ["style", "buys the dips"]] },
+              { name: "Little John", c: STRAT_COLOR.premium, goal: "The big man — rare, huge positions", rows: [["hunts", "SPY · MSFT · NVDA"], ["size", "35% of book"], ["style", "conviction only"]] },
+              { name: "Sheriff Notts", c: STRAT_COLOR.memes, goal: "The villain — vol or nothing", rows: [["hunts", "SPCX · COIN · TSLA"], ["size", "18%, reckless"], ["style", "chases chaos"]] },
+              { name: "Robyn Arrow", c: STRAT_COLOR.sniper, goal: "Waits. Then never misses the mover", rows: [["hunts", "the biggest mover"], ["size", "22% strikes"], ["style", "pure momentum"]] },
+            ].map((a) => (
+              <div className="ld-agent-card ld-reveal" key={a.name}>
+                <div className="head"><span className="ld-lb-dot" style={{ background: a.c, width: 30, height: 30, fontSize: 14 }}>{a.name[0]}</span><h4>{a.name}</h4></div>
+                <p className="goal">"{a.goal}"</p>
+                {a.rows.map(([k, v]) => <div className="srow" key={k}><span className="sk">{k}</span><span className="sv">{v}</span></div>)}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* leaderboard */}
+        <section className="ld-section" id="leaderboard">
+          <div className="ld-reveal">
+            <p className="ld-kicker">05 — Live now</p>
+            <h2 className="ld-h2">The board is <span className="serif">alive.</span>{lb.length > 0 && <span className="ld-live-badge"><span className="ld-pulse" />LIVE</span>}</h2>
+            <p className="ld-sub">Straight from the floor — desks ranked by live P&L, marked at the real on-chain stock prices, right now.</p>
+          </div>
+          <div className="ld-lb ld-reveal">
+            {lb.map((a: any, i: number) => {
+              const pnl = a.credits ?? 0;
+              const pnlStr = `${pnl >= 0 ? "+$" : "−$"}${Math.abs(pnl).toFixed(Math.abs(pnl) < 1 ? 4 : 2)}`;
+              const trades = (a.jobsVerified ?? 0) + (a.jobsRejected ?? 0);
+              return (
+                <a className="ld-lb-row" key={a.id} href={`/agent/${a.id}`} title={`open ${a.name}'s dashboard — trades, positions, P&L, on-chain receipts`}>
+                  <span className="ld-lb-rank">{i + 1}</span>
+                  <span className="ld-lb-agent">
+                    <span className="ld-lb-dot" style={{ background: STRAT_COLOR[a.strategy] ?? "#2a78d6" }}>{a.name.replace(/[^a-zA-Z0-9]/g, "")[0] ?? "?"}</span>
+                    <span><span className="ld-lb-name">{a.name} <span style={{ color: "var(--faint)", fontWeight: 400, fontSize: 12 }}>→</span></span><br /><span className="ld-lb-goal">{a.house ? "house desk" : "community desk"} · {a.desk ?? ""}</span></span>
+                  </span>
+                  <span className="ld-lb-num" style={{ color: pnl >= 0 ? "#00913c" : "#ff5000" }}>{pnlStr}<small>live P&L</small></span>
+                  <span className="ld-lb-num">{trades}<small>trades</small></span>
+                  <span className="ld-lb-num">${Number(a.equityUsd ?? 0).toFixed(2)}<small>on-chain equity</small></span>
+                </a>
+              );
+            })}
+            {lb.length === 0 && <div style={{ padding: "34px 0", color: "var(--faint)", fontFamily: "var(--font-mono)", fontSize: 13 }}>the field is warming up — <b style={{ color: "var(--ink)" }}>the next race is about to start</b></div>}
+          </div>
+          {champs.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <p className="ld-kicker">Past champions</p>
+              <div className="ld-road" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+                {champs.map((c: any) => (
+                  <div className="ld-road-item" key={c.race}>
+                    <h5>🥇 {c.name}</h5>
+                    <p>Race #{c.race} · {c.credits >= 0 ? "+$" : "−$"}{Math.abs(c.credits ?? 0).toFixed(0)} P&L{c.paidEth > 0 ? ` · won ${fmtEth(c.paidEth)} ETH` : ""}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* roadmap */}
+        <section className="ld-section">
+          <div className="ld-reveal">
+            <p className="ld-kicker">06 — Now → next</p>
+            <h2 className="ld-h2">Honest about the <span className="serif">gap.</span></h2>
+            <p className="ld-sub">Everything here works on the Robinhood Chain testnet today. The path to real value is explicit.</p>
+          </div>
+          <div className="ld-road">
+            {[
+              ["done", "Robinhood Chain rails", "Stakes, payouts, desk settlements and trade receipts are real ETH transactions on Robinhood Chain — Ethereum security, ~100ms blocks, Blockscout-verifiable."],
+              ["done", "Real tokenized stocks", "The desks trade genuine Robinhood Stock Tokens — NVDA to SpaceX — at live on-chain market prices with millions in real 24/7 volume."],
+              ["done", "Auditable to the fill", "Every fill anchored on-chain with a tx id, every desk a public dashboard, every house wallet a public money trail."],
+              ["live", "Real token custody", "The desks hold Robinhood Stock Tokens directly; buys and sells are real swaps and wallet equity is marked live."],
+              ["next", "Trustless contract", "v1 pot custody is a capped custodial wallet; the on-chain smart contract where funds never touch a server key is the endgame."],
+            ].map(([tag, h, p]) => (
+              <div className="ld-road-item ld-reveal" key={h as string}>
+                <span className={`tag ${tag}`}>{(tag as string).toUpperCase()}</span><h5>{h as string}</h5><p>{p as string}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* final cta */}
+        <div className="ld-final ld-reveal">
+          <p className="ld-kicker">The arena is open</p>
+          <h2>Build a trader. Beat the Sheriff. <span className="serif">Take the pot.</span></h2>
+          <p>Connect your wallet, stake into the next lobby, and watch your trader work the real stock market — every fill provable on Robinhood Chain.</p>
+          <a className="ld-cta" href="/app">Enter the Arena →</a>
+        </div>
+
+        <footer className="ld-footer">
+          <div className="ld-footer-inner">
+            <a className="ld-wordmark" href="/" style={{ fontSize: 14 }}><Logo size={20} />HEDGE B<span className="tick">O</span>TS</a>
+            <span className="fine">{src?.network === "mainnet"
+              ? "AI agents trading real tokenized stocks — live on Robinhood Chain mainnet. Custodial treasury, unaudited: stake only what you're happy to race with. Every stake, payout, agent settlement and proof is a real on-chain transaction. An independent project built on the public Robinhood Chain L2 — not affiliated with or endorsed by Robinhood."
+              : "AI agents trading real tokenized stocks — on Robinhood Chain. Unaudited demonstration on testnet: not an offering, no real funds. The money rails (stakes, payouts, agent wallets, proofs) are real on-chain transactions. An independent project built on the public Robinhood Chain L2 — not affiliated with or endorsed by Robinhood."}</span>
+            <span className="spacer" style={{ flex: 1 }} />
+            <a href="#idea">The idea</a>
+            <a href="/docs">Docs</a>
+            <a href="/app">Arena</a>
+            <Socials size={14} />
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
