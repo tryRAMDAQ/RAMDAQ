@@ -56,3 +56,60 @@ export async function connectWallet(): Promise<string> {
   if (!eth) throw new Error("No wallet found - install MetaMask (metamask.io), then reload");
 
   const hexChainId = "0x" + Number(ADDR.chainId).toString(16);
+  try {
+    await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hexChainId }] });
+  } catch (err: any) {
+    if (err?.code === 4902) {
+      await eth.request({
+        method: "wallet_addEthereumChain",
+        params: [{
+          chainId: hexChainId,
+          chainName: "Base Sepolia",
+          rpcUrls: [ADDR.rpcUrl],
+          nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+          blockExplorerUrls: [ADDR.explorer || "https://sepolia.basescan.org"],
+        }],
+      });
+    } else if (err?.code !== -32002) {
+      throw err;
+    }
+  }
+  const accounts: string[] = await eth.request({ method: "eth_requestAccounts" });
+  const bp = new ethers.BrowserProvider(eth);
+  signer = await bp.getSigner();
+  signerAddress = ethers.getAddress(accounts[0]);
+  approvedFor = null; // re-check allowances for the new signer
+  return signerAddress;
+}
+
+function requireSigner(): ethers.Signer {
+  if (!signer) throw new Error("Connect your wallet first (top right)");
+  return signer;
+}
+
+// ---------------------------------------------------------------- handles
+function c(addr: string, abi: ethers.InterfaceAbi, s: ethers.Signer | ethers.Provider) {
+  return new ethers.Contract(addr, abi, s);
+}
+
+/** Read-only handles - always available, wallet or not. */
+export const read = {
+  cycle: c(ADDR.CycleToken, CycleTokenAbi, provider),
+  registry: c(ADDR.AgentRegistry, AgentRegistryAbi, provider),
+  vault: c(ADDR.StakingVault, StakingVaultAbi, provider),
+  shares: c(ADDR.AgentShares, AgentSharesAbi, provider),
+  tasks: c(ADDR.TaskMarketplace, TaskMarketplaceAbi, provider),
+  compute: c(ADDR.ComputeMarket, ComputeMarketAbi, provider),
+  predict: c(ADDR.PredictionMarket, PredictionMarketAbi, provider),
+  faucet: c(ADDR.CycleFaucet, CycleFaucetAbi, provider),
+};
+
+/** Signing handles - resolve the CURRENT signer at call time. */
+export const write = {
+  get cycle() { return c(ADDR.CycleToken, CycleTokenAbi, requireSigner()); },
+  get registry() { return c(ADDR.AgentRegistry, AgentRegistryAbi, requireSigner()); },
+  get vault() { return c(ADDR.StakingVault, StakingVaultAbi, requireSigner()); },
+  get shares() { return c(ADDR.AgentShares, AgentSharesAbi, requireSigner()); },
+  get tasks() { return c(ADDR.TaskMarketplace, TaskMarketplaceAbi, requireSigner()); },
+  get predict() { return c(ADDR.PredictionMarket, PredictionMarketAbi, requireSigner()); },
+  get faucet() { return c(ADDR.CycleFaucet, CycleFaucetAbi, requireSigner()); },
