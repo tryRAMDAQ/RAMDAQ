@@ -226,3 +226,7 @@ All notable changes to Hedge Bots.
 
 - Incremental arena stability and desk PnL candidacy checks.
 
+## Build 497
+
+- Incremental arena stability and desk PnL candidacy checks.
+
